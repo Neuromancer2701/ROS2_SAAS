@@ -1,0 +1,37 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>tb3_simulation_pkg</name>
+  <version>0.1.0</version>
+  <description>ROS2 package for TurtleBot3 Gazebo simulation, teleoperation, and SLAM.</description>
+  <maintainer email="user@todo.todo">Your Name</maintainer>
+  <license>Apache License 2.0</license> <!-- Or your chosen license -->
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend condition="$ROS_PYTHON_VERSION == 3">ament_python</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>rclpy</depend>
+  <depend>geometry_msgs</depend>
+  <depend>gazebo_ros</depend>
+  <depend>robot_state_publisher</depend>
+  <depend>tf2_ros</depend>
+  <depend>slam_toolbox</depend>
+  <depend>teleop_twist_keyboard</depend>
+  <depend>turtlebot3_gazebo</depend> <!-- For robot models and worlds -->
+  <depend>rviz2</depend>
+  <depend>launch_ros</depend>
+
+  <exec_depend>ros2launch</exec_depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+  <test_depend condition="$ROS_PYTHON_VERSION == 3">ament_flake8</test_depend>
+  <test_depend condition="$ROS_PYTHON_VERSION == 3">ament_pep257</test_depend>
+  <test_depend condition="$ROS_PYTHON_VERSION == 3">python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+    <build_type condition="$ROS_PYTHON_VERSION == 3">ament_python</build_type>
+  </export>
+</package>

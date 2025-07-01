@@ -1,0 +1,166 @@
+name: ROS2 CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+    branches:
+      - main
+      - master
+
+env:
+  ROS_DISTRO: jazzy
+  # Location of the ROS workspace within the repository.
+  # If your ROS packages are in the root, this can be '.'.
+  # If they are in a subdirectory like 'ros2_ws', set it here.
+  ROS_WORKSPACE_DIR: colcon_ws # Example: 'colcon_ws' or '.'
+
+jobs:
+  build_and_test:
+    runs-on: ubuntu-latest
+    container:
+      image: ros:${ROS_DISTRO}-ros-dev # Use a dev image that has build tools
+      # Or, use a custom image built from Dockerfile.ros2-build provided in this phase:
+      # image: ghcr.io/${{ github.repository_owner }}/ros2-build-env:${{ env.ROS_DISTRO }}
+      # (This would require a preliminary step to build and push Dockerfile.ros2-build, or build it here)
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          path: ${{ env.ROS_WORKSPACE_DIR }}/src # Checkout into the src directory of the workspace
+
+      # If using a pre-built custom Docker image that already has ccache, skip this.
+      # Otherwise, install ccache in the ros-dev container if desired.
+      - name: Install ccache (optional, for C++ build speedup)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ccache
+          echo "/usr/lib/ccache" >> $GITHUB_PATH # Add ccache to PATH
+        shell: bash
+
+      # Cache ccache directory
+      - name: Cache ccache
+        uses: actions/cache@v3
+        with:
+          path: ~/.ccache
+          key: ${{ runner.os }}-ccache-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-ccache-
+
+      # Cache ROS dependencies (colcon workspace install directory)
+      # This helps speed up subsequent runs by caching already built dependencies.
+      # Adjust path if your workspace install dir is different.
+      - name: Cache colcon workspace install
+        uses: actions/cache@v3
+        with:
+          path: ${{ env.ROS_WORKSPACE_DIR }}/install
+          key: ${{ runner.os }}-${{ env.ROS_DISTRO }}-install-${{ hashFiles('${{ env.ROS_WORKSPACE_DIR }}/src/**/package.xml') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ env.ROS_DISTRO }}-install-
+
+      - name: Initialize rosdep and install dependencies
+        shell: bash
+        working-directory: ${{ env.ROS_WORKSPACE_DIR }}
+        run: |
+          sudo apt-get update
+          # rosdep init might fail if it's already initialized in the base image
+          sudo rosdep init || echo "rosdep already initialized."
+          rosdep update
+          # Install dependencies for packages in src, ignore errors for system packages already present
+          rosdep install --from-paths src -y --ignore-src -r --rosdistro ${{ env.ROS_DISTRO }}
+
+      - name: Build ROS2 workspace
+        shell: bash
+        working-directory: ${{ env.ROS_WORKSPACE_DIR }}
+        run: |
+          # Source ROS setup (important for colcon to find ROS tools)
+          source /opt/ros/${{ env.ROS_DISTRO }}/setup.bash
+          echo "Building workspace at $(pwd)"
+          # Use ccache if available
+          export CXX="ccache g++"
+          export CC="ccache gcc"
+          colcon build --symlink-install --event-handlers console_direct+
+          # Optional: Build tests explicitly if not covered by default build
+          # colcon build --symlink-install --packages-select <your_pkg_with_tests> --cmake-args -DBUILD_TESTING=ON
+
+      - name: Run ROS2 tests
+        shell: bash
+        working-directory: ${{ env.ROS_WORKSPACE_DIR }}
+        run: |
+          source /opt/ros/${{ env.ROS_DISTRO }}/setup.bash
+          source install/setup.bash # Source the built workspace
+          echo "Running tests in workspace at $(pwd)"
+          colcon test
+          colcon test-result --verbose
+
+      - name: Upload test results (optional)
+        if: always() # Run this step even if previous steps fail, to upload partial results
+        uses: actions/upload-artifact@v3
+        with:
+          name: test-results-${{ runner.os }}-${{ env.ROS_DISTRO }}
+          path: ${{ env.ROS_WORKSPACE_DIR }}/log/latest_test # Path to test logs
+
+  # Optional: Job for building and pushing a deployment Docker image
+  # This job typically runs only on pushes to the main branch after tests pass.
+  # build_and_push_deploy_image:
+  #   needs: build_and_test # Depends on the build_and_test job succeeding
+  #   if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - name: Checkout repository
+  #       uses: actions/checkout@v4
+  #       # No specific path here, assuming Dockerfile.deploy is at repo root
+  #       # and build artifacts might be downloaded or context adjusted.
+
+  #     # This step assumes you have a way to get your built application artifacts.
+  #     # One way is to pass them from the build_and_test job using artifacts.
+  #     # For simplicity, this example assumes Dockerfile.deploy can copy from a known structure
+  #     # or that you're rebuilding in a deployment-focused way.
+  #     # If your `build_and_test` job built into ${{ env.ROS_WORKSPACE_DIR }}/install,
+  #     # you'd need to get that directory here.
+  #     # A common pattern is to build the deploy image using the same commit that was tested.
+
+  #     # Example: Download install artifacts from build_and_test job
+  #     # - name: Download built workspace install directory
+  #     #   uses: actions/download-artifact@v3
+  #     #   with:
+  #     #     name: colcon-install-${{ github.sha }} # Ensure this matches an uploaded artifact name
+  #     #     path: ${{ env.ROS_WORKSPACE_DIR }}/install # Download to expected location
+
+  #     - name: Set up Docker Buildx
+  #       uses: docker/setup-buildx-action@v2
+
+  #     - name: Login to Docker Registry (e.g., GitHub Container Registry or Docker Hub)
+  #       uses: docker/login-action@v2
+  #       with:
+  #         registry: ghcr.io # or docker.io for Docker Hub
+  #         username: ${{ github.actor }}
+  #         password: ${{ secrets.GITHUB_TOKEN }} # For GHCR
+  #         # For Docker Hub, use secrets.DOCKERHUB_USERNAME and secrets.DOCKERHUB_TOKEN
+
+  #     - name: Build and push deployment Docker image
+  #       uses: docker/build-push-action@v4
+  #       with:
+  #         context: . # Root of the repository, assuming Dockerfile.deploy is here
+  #         file: ./Dockerfile.deploy # Path to your deployment Dockerfile
+  #         push: true
+  #         tags: | # Example tags
+  #           ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}:latest
+  #           ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}:${{ github.sha }}
+  #         # build-args: | # If your Dockerfile.deploy needs build args like workspace path
+  #         #   WORKSPACE_INSTALL_DIR=${{ env.ROS_WORKSPACE_DIR }}/install
+  #         cache-from: type=gha
+  #         cache-to: type=gha,mode=max
+```
+
+**Note on `ROS_WORKSPACE_DIR`**:
+The `ROS_WORKSPACE_DIR` environment variable is used to specify the root of your colcon workspace *within the GitHub Actions runner's file system*.
+- The `actions/checkout@v4` step has `path: ${{ env.ROS_WORKSPACE_DIR }}/src`. This means your repository content will be checked out into a directory structure like `/home/runner/work/your-repo-name/your-repo-name/colcon_ws/src/`.
+- Subsequent `working-directory` parameters for `run` steps are set to `${{ env.ROS_WORKSPACE_DIR }}`, so commands like `rosdep install` and `colcon build` are executed from `/home/runner/work/your-repo-name/your-repo-name/colcon_ws/`.
+
+If your ROS packages are directly in the root of your repository (i.e., `package.xml` files are in subdirectories of the root, and you'd run `colcon build` from the root), you should set `ROS_WORKSPACE_DIR: .` and adjust the checkout path to `path: src` (assuming your source code is meant to go into a `src` folder relative to where `colcon build` is run).
+
+The current setup assumes a common pattern where the repository itself is structured as a colcon workspace, or it contains a colcon workspace in a subdirectory (here named `colcon_ws`), and the actual ROS packages are inside `colcon_ws/src/`. Adjust as per your repository structure. If your repo *is* the `src` directory of a larger conceptual workspace, the paths would need significant adjustment. This template assumes the repo contains the workspace definition.

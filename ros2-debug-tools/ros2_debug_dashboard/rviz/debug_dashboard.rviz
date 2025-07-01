@@ -1,0 +1,125 @@
+Panels:
+  - Class: rviz_common/Displays
+    Help Height: 78
+    Name: Displays
+    Property Tree Widget:
+      Expanded:
+        - /Global Options1
+        - /Status Panel1
+        - /TF1
+        - /MarkerArray1
+      Splitter Ratio: 0.5
+    Tree Height: 300
+  - Class: rviz_common/Tool Properties
+    Expanded:
+      - /Global Options1
+      - /Status Panel1
+    Name: Tool Properties
+    Splitter Ratio: 0.588679
+  - Class: rviz_common/Views
+    Expanded:
+      - /Current View1
+    Name: Views
+    Splitter Ratio: 0.5
+  - Class: rviz_common/Time
+    Experimental: false
+    Name: Time
+    SyncMode: 0
+    SyncSource: ""
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Alpha: 0.5
+      Cell Size: 1
+      Class: rviz_default_plugins/Grid
+      Color: 160; 160; 164
+      Enabled: true
+      Line Style:
+        Line Width: 0.03
+        Value: Lines
+      Name: Grid
+      Normal Cell Count: 0
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0
+      Plane: XY
+      Plane Cell Count: 10
+      Reference Frame: <Fixed Frame>
+      Value: true
+    - Class: rviz_default_plugins/TF
+      Enabled: true # Enable if you need to see TF frames
+      Frame Timeout: 15
+      Frames:
+        All Enabled: false # Disable all by default, enable specific ones if needed
+      Marker Scale: 1
+      Name: TF
+      Show Arrows: true
+      Show Axes: true
+      Show Names: true
+      Tree: {}
+      Update Interval: 0
+      Value: true
+    # Example for PlotJuggler RViz Plugin (if rviz_data_publisher_node is implemented)
+    # - Class: plotjuggler_rviz_plugin/PlotterDisplay # This class name might vary
+    #   Enabled: true # Set to true if you have data to plot
+    #   Name: DebugDataPlot
+    #   TopicConfigurations:
+    #     - TopicName: /debug/topic_rate/chatter # Example topic
+    #       CurveName: ChatterRate
+    #       Color: 0;255;0 # Green
+    #     - TopicName: /debug/log_errors_count # Example topic
+    #       CurveName: LogErrors
+    #       Color: 255;0;0 # Red
+    #   Value: true
+    # Example for visualizing data as Markers (if rviz_data_publisher_node publishes markers)
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true # Set to true if you publish markers
+      Marker Topic: /debug_dashboard/markers # Example topic for markers
+      Name: DebugMarkers
+      Namespaces:
+        my_namespace: true # Enable specific namespaces if used
+      Queue Size: 100
+      Value: true
+  Enabled: true
+  Global Options:
+    Background Color: 48; 48; 48
+    Fixed Frame: base_link # Or 'map', or any relevant fixed frame
+    Frame Rate: 30
+  Name: root
+  Tools:
+    - Class: rviz_default_plugins/Interact
+      Hide Inactive Objects: true
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 5
+      Enable Orbit: true
+      Enable Yaw Pitch: true
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 0
+      Focal Shape Fixed Size: true
+      Focal Shape Size: 0.05
+      Invert Z Axis: false
+      Name: Current View
+      Near Clip Distance: 0.01
+      Pitch: 0.45
+      Target Frame: <Fixed Frame>
+      Value: Orbit (rviz)
+      Yaw: 0
+    Saved: ~
+Window Geometry:
+  Displays:
+    collapsed: false
+  Height: 1080
+  Hide Left Dock: false
+  Hide Right Dock: false
+  QMainWindow State: 000000ff00000000fd0000000400000000000001cc000003fcfc0200000008fb0000001200530065006c0065006300740069006f006e00000001e10000009b0000006400fffffffb0000001e0054006f006f006c002000500072006f007000650072007400690065007302000001ed000001df00000185000000f3fb000000100044006900730070006c006100790073010000003d000003fc000000c900fffffffb000000080056006900650077007300000001120000009b0000006400fffffffb0000000c00430061006d00650072006100000002ff000001610000000000000000fb0000000a00540069006d00650100000000000003fc000003e000fffffffb0000000000000000
+  Width: 1920
+  X: 0
+  Y: 0

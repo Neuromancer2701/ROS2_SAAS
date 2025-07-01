@@ -1,0 +1,7 @@
+# This is an empty marker file.
+# It indicates to ament_python that 'tb3_simulation_pkg' is a package.
+# It is referenced in the data_files section of setup.py:
+#   ('share/ament_index/resource_index/packages',
+#       ['resource/' + package_name]),
+#
+# This helps ROS 2 tools discover the package.

@@ -1,0 +1,609 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ROS2 SaaS Dashboard</title>
+  <!-- React CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/react@18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Axios CDN (for HTTP requests) -->
+  <script src="https://cdn.jsdelivr.net/npm/axios@1.4.0/dist/axios.min.js"></script>
+  <!-- Babel Standalone CDN (for JSX transformation in browser) -->
+  <script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7.18.9/babel.min.js"></script>
+
+  <style>
+    /* Additional custom styles if needed */
+    .sidebar {
+      width: 250px;
+      transition: width 0.3s ease;
+    }
+    .main-content {
+      transition: margin-left 0.3s ease;
+      margin-left: 250px; /* Initial margin to accommodate sidebar */
+    }
+    .sidebar-collapsed {
+      width: 60px;
+    }
+    .main-content-expanded {
+      margin-left: 60px; /* Margin when sidebar is collapsed */
+    }
+  </style>
+</head>
+<body class="bg-gray-900 text-gray-100">
+  <div id="root" class="flex min-h-screen"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useCallback, useMemo } = React;
+
+    // Mock GitHub API client (replace with actual Axios calls)
+    const githubApi = {
+      getUserRepos: async (token) => {
+        if (!token) {
+          // console.warn("GitHub token not provided. Using mock data for repos.");
+          return Promise.resolve([
+            { id: 1, name: "ros2-saas-ide-config", full_name: "user/ros2-saas-ide-config", description: "ROS2 IDE Setup" },
+            { id: 2, name: "ros2-package-generator", full_name: "user/ros2-package-generator", description: "Generate ROS2 packages" },
+            { id: 3, name: "ros2-gazebo-integration", full_name: "user/ros2-gazebo-integration", description: "Gazebo + TurtleBot3" },
+            { id: 4, name: "another-repo", full_name: "user/another-repo", description: "Some other project" },
+          ]);
+        }
+        try {
+          const response = await axios.get("https://api.github.com/user/repos?type=owner&sort=updated&per_page=10", {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          return response.data;
+        } catch (error) {
+          console.error("Error fetching repos:", error);
+          throw error; // Re-throw to be caught by caller
+        }
+      },
+      getRepoContents: async (token, repoFullName, path = "") => {
+        if (!token) {
+          // console.warn("GitHub token not provided. Using mock data for repo contents.");
+          if (repoFullName === "user/ros2-saas-ide-config" && path === "") {
+            return Promise.resolve([ { name: "Dockerfile", type: "file" }, { name: "README.md", type: "file" }, { name: "src", type: "dir" }]);
+          }
+          return Promise.resolve([{ name: "file1.txt", type: "file" }, { name: "folder", type: "dir" }]);
+        }
+        try {
+          const response = await axios.get(`https://api.github.com/repos/${repoFullName}/contents/${path}`, {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          return response.data;
+        } catch (error) {
+          console.error(`Error fetching repo contents for ${repoFullName}/${path}:`, error);
+          throw error;
+        }
+      },
+      getFileContent: async (token, repoFullName, filePath) => {
+         if (!token) {
+          // console.warn("GitHub token not provided. Using mock data for file content.");
+          return Promise.resolve({ content: btoa(`# Mock content for ${filePath}\nprint("Hello from mock file")`), encoding: 'base64' });
+        }
+        try {
+          const response = await axios.get(`https://api.github.com/repos/${repoFullName}/contents/${filePath}`, {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          return response.data; // { content: "base64_encoded_string", encoding: "base64", ... }
+        } catch (error) {
+          console.error(`Error fetching file content for ${repoFullName}/${filePath}:`, error);
+          throw error;
+        }
+      }
+    };
+
+    // --- Components ---
+
+    // Simple Icon component (can be expanded with more icons)
+    const Icon = ({ name, className = "w-5 h-5" }) => {
+      const icons = {
+        folder: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />,
+        file: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />,
+        github: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 00-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0020 4.77 5.07 5.07 0 0019.91 1S18.73.65 16 2.48a13.38 13.38 0 00-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 005 4.77a5.44 5.44 0 00-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 009 18.13V22" />,
+        play: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />,
+        stop: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 9V5a2 2 0 012-2h10a2 2 0 012 2v4m-2 4v4a2 2 0 01-2 2H7a2 2 0 01-2-2v-4m2-4h10" />,
+        menu: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 6h16M4 12h16M4 18h16" />,
+        terminal: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />,
+        edit: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />,
+        save: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" />,
+        settings: <path fillRule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clipRule="evenodd" />,
+        refresh: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m-15.357-2a8.001 8.001 0 0015.357 2m0 0H15" />,
+      };
+      return (
+        <svg xmlns="http://www.w3.org/2000/svg" className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          {icons[name] || <circle cx="12" cy="12" r="10" strokeWidth="2" />}
+        </svg>
+      );
+    };
+
+    const GitHubTokenModal = ({ isOpen, onClose, onSave }) => {
+      const [token, setToken] = useState(localStorage.getItem('githubToken') || '');
+
+      if (!isOpen) return null;
+
+      const handleSave = () => {
+        localStorage.setItem('githubToken', token);
+        onSave(token);
+        onClose();
+      };
+
+      return (
+        <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50">
+          <div className="bg-gray-800 p-6 rounded-lg shadow-xl w-full max-w-md">
+            <h2 className="text-2xl font-semibold mb-4 text-white">GitHub Access Token</h2>
+            <p className="text-gray-400 mb-2">
+              Please provide a GitHub Personal Access Token with <code className="bg-gray-700 px-1 rounded text-sm">repo</code> scope.
+              This token will be stored in your browser's local storage.
+            </p>
+            <input
+              type="password" // Use password type for sensitive input
+              value={token}
+              onChange={(e) => setToken(e.target.value)}
+              placeholder="Enter your GitHub token"
+              className="w-full p-2 border border-gray-600 rounded bg-gray-700 text-white focus:ring-2 focus:ring-indigo-500 mb-4"
+            />
+            <div className="flex justify-end space-x-3">
+              <button
+                onClick={onClose}
+                className="px-4 py-2 bg-gray-600 hover:bg-gray-500 text-white rounded-md transition"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSave}
+                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-md transition"
+              >
+                Save Token
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    const Sidebar = ({ repos, selectedRepo, onRepoSelect, onToggleCollapse, collapsed, onShowSettings }) => {
+      return (
+        <div className={`bg-gray-800 text-white p-3 flex flex-col h-full shadow-lg ${collapsed ? 'sidebar-collapsed' : 'sidebar'}`}>
+          <div className="flex items-center justify-between mb-4">
+            {!collapsed && <h2 className="text-2xl font-bold flex items-center"><Icon name="github" className="w-7 h-7 mr-2"/> Repositories</h2>}
+            <button onClick={onToggleCollapse} className="p-2 hover:bg-gray-700 rounded">
+              <Icon name="menu" />
+            </button>
+          </div>
+          <ul className="space-y-1 overflow-y-auto flex-grow">
+            {repos.map((repo) => (
+              <li
+                key={repo.id}
+                className={`flex items-center p-2.5 rounded-md cursor-pointer transition-colors
+                            ${selectedRepo && selectedRepo.id === repo.id ? 'bg-indigo-600' : 'hover:bg-gray-700'}`}
+                onClick={() => onRepoSelect(repo)}
+                title={repo.name}
+              >
+                <Icon name="folder" className="w-5 h-5 mr-3 flex-shrink-0" />
+                {!collapsed && <span className="truncate">{repo.name}</span>}
+              </li>
+            ))}
+          </ul>
+          <button
+            onClick={onShowSettings}
+            className="mt-auto p-2.5 hover:bg-gray-700 rounded-md flex items-center w-full text-left"
+            title="Settings"
+          >
+            <Icon name="settings" className="w-5 h-5 mr-3 flex-shrink-0" />
+            {!collapsed && <span>Settings</span>}
+          </button>
+        </div>
+      );
+    };
+
+    const FileExplorer = ({ repo, githubToken, onFileSelect, currentPath, onPathChange }) => {
+      const [contents, setContents] = useState([]);
+      const [error, setError] = useState(null);
+      const [loading, setLoading] = useState(false);
+
+      const loadContents = useCallback(async (path) => {
+        if (!repo) return;
+        setLoading(true);
+        setError(null);
+        try {
+          const data = await githubApi.getRepoContents(githubToken, repo.full_name, path);
+          // Sort contents: folders first, then files, alphabetically
+          data.sort((a, b) => {
+            if (a.type === b.type) {
+              return a.name.localeCompare(b.name);
+            }
+            return a.type === 'dir' ? -1 : 1;
+          });
+          setContents(data);
+        } catch (err) {
+          setError(err.message || "Failed to fetch repository contents.");
+        } finally {
+          setLoading(false);
+        }
+      }, [repo, githubToken]);
+
+      useEffect(() => {
+        loadContents(currentPath);
+      }, [repo, currentPath, loadContents]);
+
+      const handleItemClick = (item) => {
+        if (item.type === 'dir') {
+          onPathChange(item.path);
+        } else if (item.type === 'file') {
+          onFileSelect(item);
+        }
+      };
+
+      const navigateUp = () => {
+        if (currentPath === "") return;
+        const parts = currentPath.split('/');
+        parts.pop();
+        onPathChange(parts.join('/'));
+      };
+
+      const breadcrumbs = useMemo(() => {
+        const parts = currentPath.split('/').filter(p => p);
+        const crumbs = [{ name: repo?.name || 'Root', path: "" }];
+        let currentCrumbPath = "";
+        parts.forEach(part => {
+          currentCrumbPath += (currentCrumbPath ? '/' : '') + part;
+          crumbs.push({ name: part, path: currentCrumbPath });
+        });
+        return crumbs;
+      }, [currentPath, repo?.name]);
+
+
+      if (!repo) return <div className="p-4 text-gray-500">Select a repository to explore its files.</div>;
+      if (loading) return <div className="p-4 text-center text-gray-400">Loading files...</div>;
+      if (error) return <div className="p-4 text-red-400">Error: {error} <button onClick={() => loadContents(currentPath)} className="ml-2 px-2 py-1 bg-red-500 text-white rounded text-sm">Retry</button></div>;
+
+      return (
+        <div className="bg-gray-800 p-4 h-full overflow-y-auto">
+          <div className="mb-3 flex items-center space-x-1 text-sm text-gray-400">
+            {breadcrumbs.map((crumb, index) => (
+              <React.Fragment key={crumb.path}>
+                {index > 0 && <span>/</span>}
+                <span
+                  className={`hover:text-indigo-400 ${index === breadcrumbs.length -1 ? 'text-white font-semibold' : 'cursor-pointer'}`}
+                  onClick={() => index !== breadcrumbs.length - 1 && onPathChange(crumb.path)}
+                >
+                  {crumb.name}
+                </span>
+              </React.Fragment>
+            ))}
+            <button onClick={() => loadContents(currentPath)} className="ml-auto p-1 hover:bg-gray-700 rounded" title="Refresh">
+                <Icon name="refresh" className="w-4 h-4" />
+            </button>
+          </div>
+          <ul>
+            {contents.map((item) => (
+              <li
+                key={item.sha}
+                className="flex items-center p-2 hover:bg-gray-700 rounded-md cursor-pointer text-gray-300"
+                onClick={() => handleItemClick(item)}
+              >
+                <Icon name={item.type === 'dir' ? 'folder' : 'file'} className="w-5 h-5 mr-3 text-indigo-400" />
+                {item.name}
+              </li>
+            ))}
+          </ul>
+        </div>
+      );
+    };
+
+    const Editor = ({ file, githubToken, repoFullName }) => {
+      const [content, setContent] = useState('');
+      const [originalContent, setOriginalContent] = useState('');
+      const [loading, setLoading] = useState(false);
+      const [error, setError] = useState(null);
+      const [isDirty, setIsDirty] = useState(false);
+
+      useEffect(() => {
+        if (file && file.path) {
+          setLoading(true);
+          setError(null);
+          githubApi.getFileContent(githubToken, repoFullName, file.path)
+            .then(data => {
+              if (data.encoding === 'base64') {
+                const decodedContent = atob(data.content);
+                setContent(decodedContent);
+                setOriginalContent(decodedContent);
+                setIsDirty(false);
+              } else {
+                throw new Error("Unsupported file encoding.");
+              }
+            })
+            .catch(err => {
+              setError(err.message || "Failed to fetch file content.");
+              setContent('');
+              setOriginalContent('');
+            })
+            .finally(() => setLoading(false));
+        } else {
+          setContent('');
+          setOriginalContent('');
+          setIsDirty(false);
+        }
+      }, [file, githubToken, repoFullName]);
+
+      const handleContentChange = (newContent) => {
+        setContent(newContent);
+        setIsDirty(newContent !== originalContent);
+      };
+
+      const handleSave = () => {
+        alert(`Saving ${file.name} (Not implemented yet)`);
+        // TODO: Implement actual save to GitHub API
+        // Requires commit message, potentially branch handling, etc.
+        // After successful save: setOriginalContent(content); setIsDirty(false);
+      };
+
+      if (!file) return <div className="flex-grow p-6 text-gray-500 flex items-center justify-center">Select a file to view or edit.</div>;
+      if (loading) return <div className="flex-grow p-6 text-center text-gray-400">Loading file content...</div>;
+      if (error) return <div className="flex-grow p-6 text-red-400">Error: {error}</div>;
+
+      return (
+        <div className="flex-grow flex flex-col bg-gray-900">
+          <div className="p-3 bg-gray-800 border-b border-gray-700 flex items-center justify-between">
+            <h3 className="text-lg font-semibold text-white">{file.name}</h3>
+            {isDirty && <span className="text-yellow-400 text-xs mr-2">(modified)</span>}
+            <button
+                onClick={handleSave}
+                disabled={!isDirty}
+                className={`px-4 py-1.5 text-sm rounded-md transition flex items-center
+                            ${isDirty ? 'bg-indigo-600 hover:bg-indigo-500 text-white'
+                                      : 'bg-gray-600 text-gray-400 cursor-not-allowed'}`}
+            >
+                <Icon name="save" className="w-4 h-4 mr-2" /> Save
+            </button>
+          </div>
+          <textarea
+            value={content}
+            onChange={(e) => handleContentChange(e.target.value)}
+            className="flex-grow p-4 bg-gray-800 text-gray-200 font-mono text-sm focus:outline-none resize-none"
+            spellCheck="false"
+          />
+        </div>
+      );
+    };
+
+    const TerminalEmulator = () => {
+        const [history, setHistory] = useState([{type: 'info', text: 'ROS2 Simulation Control Terminal (Simulated)'}]);
+        const [input, setInput] = useState('');
+        const inputRef = React.useRef(null);
+
+        const handleInputChange = (e) => setInput(e.target.value);
+
+        const handleCommand = (cmd) => {
+            let output = `Executing: ${cmd}`;
+            let type = 'output';
+            if (cmd.startsWith("ros2 launch")) {
+                output = `Attempting to launch: ${cmd.split(' ')[2]}... Simulation started (simulated).`;
+                type = 'success';
+            } else if (cmd === "help") {
+                output = "Available commands (simulated):\n  ros2 launch <pkg> <launch_file>\n  clear\n  help";
+            } else if (cmd === "clear") {
+                setHistory([]);
+                return;
+            } else if (cmd.trim() === "") {
+                return;
+            } else {
+                output = `Unknown command: ${cmd}`;
+                type = 'error';
+            }
+            setHistory(prev => [...prev, {type: 'input', text: `$ ${cmd}`}, {type, text: output}]);
+        };
+
+        const handleSubmit = (e) => {
+            e.preventDefault();
+            if (input.trim()) {
+                handleCommand(input.trim());
+            }
+            setInput('');
+        };
+
+        useEffect(() => {
+            if (inputRef.current) {
+                inputRef.current.scrollTop = inputRef.current.scrollHeight;
+            }
+        }, [history]);
+
+        return (
+            <div className="h-64 bg-black text-white font-mono text-sm p-3 flex flex-col">
+                <div ref={inputRef} className="flex-grow overflow-y-auto mb-2">
+                    {history.map((line, index) => (
+                        <div key={index} className={`whitespace-pre-wrap ${
+                            line.type === 'input' ? 'text-green-400' :
+                            line.type === 'error' ? 'text-red-400' :
+                            line.type === 'success' ? 'text-blue-400' : 'text-gray-300'
+                        }`}>
+                            {line.text}
+                        </div>
+                    ))}
+                </div>
+                <form onSubmit={handleSubmit} className="flex">
+                    <span className="text-green-400 mr-2">$</span>
+                    <input
+                        type="text"
+                        value={input}
+                        onChange={handleInputChange}
+                        className="flex-grow bg-transparent border-none focus:outline-none"
+                        autoFocus
+                    />
+                </form>
+            </div>
+        );
+    };
+
+
+    const MainContent = ({ selectedRepo, githubToken }) => {
+      const [selectedFile, setSelectedFile] = useState(null);
+      const [currentPath, setCurrentPath] = useState(""); // Path for file explorer
+
+      useEffect(() => {
+        // Reset path and selected file when repo changes
+        setCurrentPath("");
+        setSelectedFile(null);
+      }, [selectedRepo]);
+
+      if (!selectedRepo) {
+        return (
+          <div className="flex-grow flex items-center justify-center text-gray-500 p-8">
+            <div className="text-center">
+              <Icon name="github" className="w-16 h-16 mx-auto mb-4 text-gray-700" />
+              <h2 className="text-2xl font-semibold">Welcome to ROS2 SaaS Dashboard</h2>
+              <p>Select a repository from the sidebar to get started.</p>
+            </div>
+          </div>
+        );
+      }
+
+      return (
+        <div className="flex-grow flex flex-col overflow-hidden"> {/* Main content area */}
+          {/* Header for selected repo */}
+          <header className="bg-gray-800 p-4 shadow-md z-10 border-b border-gray-700">
+            <h1 className="text-2xl font-bold text-white">{selectedRepo.name}</h1>
+            <p className="text-sm text-gray-400">{selectedRepo.description || "No description."}</p>
+          </header>
+
+          {/* Main three-panel layout: File Explorer, Editor, Simulation Controls */}
+          <div className="flex flex-grow overflow-hidden"> {/* This flex container holds the three panels */}
+            {/* Panel 1: File Explorer */}
+            <div className="w-1/4 min-w-[250px] max-w-[400px] border-r border-gray-700 flex flex-col overflow-y-auto">
+              <FileExplorer
+                repo={selectedRepo}
+                githubToken={githubToken}
+                onFileSelect={setSelectedFile}
+                currentPath={currentPath}
+                onPathChange={setCurrentPath}
+              />
+            </div>
+
+            {/* Panel 2: Editor */}
+            <div className="w-1/2 flex-grow flex flex-col overflow-y-auto"> {/* Editor takes remaining space */}
+              <Editor file={selectedFile} githubToken={githubToken} repoFullName={selectedRepo.full_name} />
+            </div>
+
+            {/* Panel 3: Simulation Controls & Terminal */}
+            <div className="w-1/4 min-w-[300px] max-w-[500px] border-l border-gray-700 flex flex-col">
+              <div className="p-4 bg-gray-800">
+                <h3 className="text-xl font-semibold text-white mb-3">Simulation Controls</h3>
+                <div className="space-y-3">
+                    <button
+                        onClick={() => alert(`Starting simulation for ${selectedRepo.name} (Not implemented)`)}
+                        className="w-full flex items-center justify-center px-4 py-2 bg-green-600 hover:bg-green-500 text-white rounded-md transition"
+                    >
+                        <Icon name="play" className="w-5 h-5 mr-2"/> Run Simulation
+                    </button>
+                    <button
+                        onClick={() => alert(`Stopping simulation for ${selectedRepo.name} (Not implemented)`)}
+                        className="w-full flex items-center justify-center px-4 py-2 bg-red-600 hover:bg-red-500 text-white rounded-md transition"
+                    >
+                        <Icon name="stop" className="w-5 h-5 mr-2"/> Stop Simulation
+                    </button>
+                     <button
+                        onClick={() => alert(`Opening project settings for ${selectedRepo.name} (Not implemented)`)}
+                        className="w-full flex items-center justify-center px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-md transition"
+                    >
+                        <Icon name="settings" className="w-5 h-5 mr-2"/> Project Settings
+                    </button>
+                </div>
+              </div>
+              <div className="flex-grow border-t border-gray-700">
+                 <TerminalEmulator />
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    function App() {
+      const [repos, setRepos] = useState([]);
+      const [selectedRepo, setSelectedRepo] = useState(null);
+      const [githubToken, setGithubToken] = useState(localStorage.getItem('githubToken'));
+      const [isTokenModalOpen, setIsTokenModalOpen] = useState(!localStorage.getItem('githubToken')); // Open if no token
+      const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+      const [loadingError, setLoadingError] = useState(null);
+
+
+      useEffect(() => {
+        if (githubToken) {
+          setLoadingError(null);
+          githubApi.getUserRepos(githubToken)
+            .then(data => {
+                // Filter for repos that seem like part of this project based on name
+                const projectRepoNames = [
+                    'ros2-saas-ide-config',
+                    'ros2-package-generator',
+                    'ros2-gazebo-integration',
+                    'ros2-debug-tools',
+                    'ros2-cicd-pipeline',
+                    'ros2-front-end' // This repo itself
+                ];
+                const filteredRepos = data.filter(repo => projectRepoNames.some(name => repo.name.includes(name)));
+                setRepos(filteredRepos.length > 0 ? filteredRepos : data.slice(0,5)); // Fallback to first 5 if no matches
+             })
+            .catch(error => {
+                console.error("Failed to fetch repositories:", error);
+                setLoadingError("Failed to fetch repositories. Check your GitHub token and network connection.");
+                if (error.response && error.response.status === 401) { // Unauthorized
+                    localStorage.removeItem('githubToken'); // Clear bad token
+                    setGithubToken(null);
+                    setIsTokenModalOpen(true); // Re-open modal
+                }
+            });
+        } else {
+          // Use mock data or prompt for token if no token is available
+          githubApi.getUserRepos(null).then(setRepos); // Uses mock data
+        }
+      }, [githubToken]);
+
+      const handleRepoSelect = (repo) => {
+        setSelectedRepo(repo);
+      };
+
+      const handleSaveToken = (token) => {
+        setGithubToken(token);
+        setIsTokenModalOpen(false);
+      };
+
+      const handleToggleSidebar = () => {
+        setSidebarCollapsed(!sidebarCollapsed);
+      };
+
+      return (
+        <>
+          <GitHubTokenModal
+            isOpen={isTokenModalOpen}
+            onClose={() => setIsTokenModalOpen(false)}
+            onSave={handleSaveToken}
+          />
+          <Sidebar
+            repos={repos}
+            selectedRepo={selectedRepo}
+            onRepoSelect={handleRepoSelect}
+            onToggleCollapse={handleToggleSidebar}
+            collapsed={sidebarCollapsed}
+            onShowSettings={() => setIsTokenModalOpen(true)}
+          />
+          <main className={`flex-grow transition-all duration-300 ease-in-out ${sidebarCollapsed ? 'ml-[60px]' : 'ml-[250px]'}`}>
+            {loadingError && (
+              <div className="p-4 bg-red-800 text-white text-center">
+                {loadingError}
+                <button onClick={() => setIsTokenModalOpen(true)} className="ml-2 underline">Update Token</button>
+              </div>
+            )}
+            <MainContent selectedRepo={selectedRepo} githubToken={githubToken} />
+          </main>
+        </>
+      );
+    }
+
+    ReactDOM.render(<App />, document.getElementById("root"));
+  </script>
+</body>
+</html>
