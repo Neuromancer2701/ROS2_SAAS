@@ -1,0 +1,203 @@
+name: Build and Push ROS2 App to AWS ECR
+
+on:
+  push:
+    branches:
+      - main # Or your deployment branch
+      # Can also trigger on release creation, tags, etc.
+  # pull_request: # Optionally build on PRs without pushing
+  #   branches:
+  #     - main
+
+env:
+  AWS_REGION: "us-east-1" # Change to your AWS region
+  ECR_REPOSITORY_NAME: "ros2-saas-app" # Change to your ECR repository name
+  # ROS_DISTRO: jazzy # Assuming Dockerfile sets this or uses a ROS base image
+
+jobs:
+  build-and-push-to-ecr:
+    name: Build and Push to ECR
+    runs-on: ubuntu-latest
+    # Add permissions if using GitHub OIDC for AWS authentication
+    permissions:
+      id-token: write # Required for OIDC
+      contents: read  # Required to checkout the repository
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        # This workflow assumes it's in the `ros2-saas-integrated-ec2` directory's .github/workflows path.
+        # The Docker build context will be `ros2-saas-integrated-ec2`.
+        # If your actual ROS source code (Phases 1-6) is in a different repository or path,
+        # you'll need to check it out too and structure the build context accordingly.
+        # For this example, we assume the Dockerfile in `ros2-saas-integrated-ec2`
+        # knows how to access/build the source code (e.g., by copying from a `src_projects` dir
+        # that you would populate in an earlier step or as part of the build context).
+
+      # --- BEGIN: Code Preparation (Crucial Step) ---
+      # The Dockerfile in `ros2-saas-integrated-ec2` needs access to the source code
+      # from Phases 1-6 (ide-config, package-generator, gazebo-integration, debug-tools,
+      # cicd-pipeline for reference, and front-end).
+      #
+      # Option 1: If this `ros2-saas-integrated-ec2` repo *also* contains all the src_projects.
+      #   (This is implied by the current project structure where each phase is a top-level dir)
+      #   Then, the Docker build context (defaulting to `ros2-saas-integrated-ec2`) needs
+      #   to be able to COPY files from sibling directories (e.g., `../ros2-front-end`).
+      #   This usually means setting the build context to the PARENT directory of all phases.
+      #   Let's assume the workflow runs from the root of the monorepo containing all phases.
+      #
+      # Option 2: Check out multiple repositories or use submodules if they are separate.
+      #
+      # For this workflow, we'll assume the GitHub Actions runner checks out the *entire*
+      # monorepo containing all phase directories. The `Dockerfile` in `ros2-saas-integrated-ec2`
+      # will then use COPY commands with relative paths like `COPY ../ros2-front-end /app/frontend`.
+      #
+      # If this `aws_ecr_push.yml` is *inside* `ros2-saas-integrated-ec2/.github/workflows/`,
+      # then the default GITHUB_WORKSPACE will be the root of the monorepo if the workflow
+      # is defined at the monorepo level. If the workflow is specific to this sub-project,
+      # paths in Dockerfile need careful adjustment or a multi-stage Docker build.
+
+      # This step is a placeholder to emphasize that `src_projects` needs to be populated
+      # in the Docker build context. If your main repo is structured such that `ros2-saas-integrated-ec2`
+      # is at the root and `src_projects` is a subdir within it, then this is fine.
+      # If `ros2-saas-ide-config` etc. are sibling dirs, the Docker context needs to be higher.
+      # For simplicity, let's assume the Dockerfile is written to expect `src_projects`
+      # to be populated by an earlier CI step or that the build context is set appropriately.
+      # The Dockerfile in `ros2-saas-integrated-ec2` should handle copying these.
+      # E.g., Dockerfile: `COPY ./src_projects/ros2-front-end /opt/ros2_saas_app/frontend`
+      # This means the build context for `docker/build-push-action` should be the
+      # root of `ros2-saas-integrated-ec2`, and `src_projects` must be inside it.
+      # The plan implies `ros2-saas-integrated-ec2/src_projects/` will be created.
+      # The previous plan step was to create `ros2-saas-integrated-ec2` directory.
+      # The files from phases 1-6 are NOT copied by the agent into this directory.
+      # The README instructs user to do this. So for CI, this step is critical.
+      #
+      # **Revised Assumption for CI:**
+      # The CI will checkout the *entire* monorepo.
+      # The Docker build context will be set to the root of the monorepo.
+      # The Dockerfile path will be `ros2-saas-integrated-ec2/Dockerfile`.
+      # The Dockerfile will use `COPY ros2-front-end /opt/ros2_saas_app/frontend` etc.
+
+      - name: Configure AWS credentials using OIDC
+        uses: aws-actions/configure-aws-credentials@v4 # v4 supports OIDC
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ secrets.AWS_IAM_ROLE_NAME }} # OIDC Role
+          aws-region: ${{ env.AWS_REGION }}
+          # For non-OIDC (Access Key ID and Secret Access Key):
+          # aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          # aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          # aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }} # If using temporary credentials
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx (for multi-platform builds, optional)
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push Docker image to ECR
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }} # Use commit SHA for unique tag
+        uses: docker/build-push-action@v5
+        with:
+          context: ../../ # IMPORTANT: Set context to the monorepo root
+                          # This assumes this YML is in ros2-saas-integrated-ec2/.github/workflows/
+                          # and the monorepo root is two levels up. Adjust if structure differs.
+          file: ./ros2-saas-integrated-ec2/Dockerfile # Path to Dockerfile relative to context
+          push: true
+          tags: |
+            ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY_NAME }}:${{ env.IMAGE_TAG }}
+            ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY_NAME }}:latest
+          # build-args: | # Pass build arguments if your Dockerfile needs them
+            # ROS_WORKSPACE_SRC_DIR=src_projects # Example if Dockerfile uses this ARG
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # platforms: linux/amd64 #, linux/arm64 # For multi-platform builds
+
+      - name: Print Image Details
+        run: |
+          echo "Image pushed to ECR: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_NAME }}:${{ github.sha }}"
+          echo "Image also tagged as: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_NAME }}:latest"
+
+      # Optional: Further steps like updating ECS service, deploying to EC2, etc.
+      # - name: Update ECS Service (example)
+      #   if: github.ref == 'refs/heads/main' # Only on pushes to main
+      #   run: |
+      #     aws ecs update-service --cluster <your-ecs-cluster-name> --service <your-ecs-service-name> --force-new-deployment --task-definition <your-task-definition-family>
+      #   env:
+      #     AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      #     AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      #     AWS_DEFAULT_REGION: ${{ env.AWS_REGION }}
+
+# --- GitHub Secrets Required for this Workflow ---
+# AWS_ACCOUNT_ID: Your AWS Account ID (e.g., 123456789012) - for OIDC
+# AWS_IAM_ROLE_NAME: Name of the IAM Role configured for GitHub OIDC - for OIDC
+# OR (if not using OIDC):
+# AWS_ACCESS_KEY_ID: For AWS authentication.
+# AWS_SECRET_ACCESS_KEY: For AWS authentication.
+# AWS_SESSION_TOKEN: (Optional) If using temporary credentials.
+
+# --- IAM Role Permissions for OIDC (Example) ---
+# The IAM Role `${{ secrets.AWS_IAM_ROLE_NAME }}` needs permissions like:
+# - ecr:GetAuthorizationToken
+# - ecr:BatchCheckLayerAvailability
+# - ecr:GetDownloadUrlForLayer
+# - ecr:GetRepositoryPolicy
+# - ecr:DescribeRepositories
+# - ecr:ListImages
+# - ecr:DescribeImages
+# - ecr:BatchGetImage
+# - ecr:InitiateLayerUpload
+# - ecr:UploadLayerPart
+# - ecr:CompleteLayerUpload
+# - ecr:PutImage
+# If also updating ECS, add `ecs:UpdateService`, `ecs:DescribeServices`, etc.
+
+# --- Dockerfile Context ---
+# The `context: ../../` line is critical. It assumes:
+# .
+# ├── phase1_dir
+# ├── phase2_dir
+# ...
+# └── ros2-saas-integrated-ec2  <-- This project
+#     ├── .github
+#     │   └── workflows
+#     │       └── aws_ecr_push.yml  <-- This workflow file
+#     ├── Dockerfile
+#     └── ... (other files for this phase)
+#
+# The Dockerfile in `ros2-saas-integrated-ec2/Dockerfile` would then use COPY commands like:
+# COPY ros2-front-end /opt/ros2_saas_app/frontend/
+# COPY ros2-package-generator /opt/ros2_saas_app/src_to_build/ros2-package-generator/
+# COPY ros2-saas-ide-config /opt/ros2_saas_app/src_to_build/ros2-saas-ide-config/
+# (Assuming these Phase 1-6 directories are at the monorepo root alongside `ros2-saas-integrated-ec2`)
+#
+# If the `ros2-saas-integrated-ec2` is the root of its own repository and is meant to
+# consume the other projects as submodules or artifacts, the checkout and context would change.
+# The current monorepo structure implies the `../../` context.
+```
+
+This GitHub Actions workflow (`aws_ecr_push.yml`):
+-   Triggers on pushes to `main` (or `master`).
+-   Sets environment variables for AWS region and ECR repository name.
+-   Uses **OIDC (OpenID Connect)** for secure authentication with AWS. This is the recommended method and avoids storing long-lived AWS access keys as GitHub secrets. You'll need to configure an IAM OIDC provider in AWS and an IAM role that this workflow can assume. Secrets like `AWS_ACCOUNT_ID` and `AWS_IAM_ROLE_NAME` are used for this. (Alternatively, commented-out lines show how to use `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` if OIDC is not set up).
+-   Logs into Amazon ECR.
+-   Sets up Docker Buildx (useful for multi-platform builds, though not strictly necessary for single-platform).
+-   **Builds the Docker image and pushes it to ECR.**
+    -   **Crucially, the `context` for `docker/build-push-action` is set to `../../`.** This assumes this workflow file is located at `ros2-saas-integrated-ec2/.github/workflows/aws_ecr_push.yml` and that the directories for Phases 1-6 (e.g., `ros2-front-end`, `ros2-package-generator`) are siblings to `ros2-saas-integrated-ec2` at the root of a monorepo. The `Dockerfile` within `ros2-saas-integrated-ec2` must then use relative `COPY` commands like `COPY ros2-front-end /destination/in/image`. This is a common pattern for building complex applications from a monorepo structure.
+    -   The image is tagged with the commit SHA and `latest`.
+-   Prints the pushed image details.
+-   Includes a commented-out example for updating an ECS service, which would be a typical next step in a CD pipeline.
+
+**Before this workflow can run successfully:**
+1.  **AWS ECR Repository:** The ECR repository (`ECR_REPOSITORY_NAME`) must exist in your AWS account in the specified region.
+2.  **IAM OIDC Setup (Recommended):**
+    *   Configure an IAM OIDC identity provider in AWS for GitHub Actions.
+    *   Create an IAM role that trusts this OIDC provider and has the necessary permissions to push to ECR (and any other AWS services the workflow might interact with, like ECS).
+    *   Store `AWS_ACCOUNT_ID` and `AWS_IAM_ROLE_NAME` as GitHub secrets in your repository.
+3.  **Dockerfile `COPY` Commands:** The `Dockerfile` inside `ros2-saas-integrated-ec2` must be written to correctly `COPY` the source code from the other project phase directories (e.g., `COPY ros2-front-end /opt/ros2_saas_app/frontend/`, `COPY ros2-package-generator /opt/ros2_saas_app/ros_ws/src/ros2-package-generator/`, etc.) relative to the build context (`../../`).
+4.  **Build Context:** Ensure the `context: ../../` path is correct based on your actual repository structure and where this workflow file resides. If `ros2-saas-integrated-ec2` is the root of its own repository, the context would be `.` and you'd need another way to get the Phase 1-6 code (e.g., as submodules, or download artifacts from another build). The current monorepo assumption is based on how the project has been structured so far.
+
+This workflow provides the CI part (build and push image). The CD part (deploying to EC2/ECS using the image and CloudFormation template) would typically be a subsequent step, either in this workflow or triggered by it.

@@ -1,0 +1,391 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  CloudFormation template for ROS2 SaaS Application on AWS.
+  Provisions an EC2 instance (optional g4dn for GPU), RDS PostgreSQL instance,
+  and sets up an ECS cluster with a Fargate service to run the application container.
+  Alternatively, can be adapted to run directly on EC2 without ECS.
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC ID for deploying resources.
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: List of Subnet IDs for EC2, RDS, and ECS tasks. Must be in at least two Availability Zones for RDS and ECS.
+  InstanceType:
+    Type: String
+    Default: t3.large # General purpose
+    # For GPU workloads like Gazebo rendering, consider g4dn.xlarge or similar.
+    # InstanceType: g4dn.xlarge
+    Description: EC2 instance type. Use g4dn for GPU.
+  EC2ImageId:
+    Type: AWS::EC2::Image::Id
+    # Default to an Amazon Linux 2 AMI. For GPU instances, use a Deep Learning AMI or an AMI with NVIDIA drivers.
+    # Example for Amazon Linux 2 (x86_64) in us-east-1: ami-0c5564235f69607ff (lookup latest for your region)
+    # Example for Deep Learning AMI (Ubuntu 20.04 based) in us-east-1: ami-0c41bbd5f2e4bbfe4 (lookup latest)
+    Default: "ami-0c41bbd5f2e4bbfe4" # Placeholder - UPDATE FOR YOUR REGION AND OS PREFERENCE (e.g., Ubuntu 20/22 for ROS)
+    Description: AMI ID for EC2 instance. For g4dn, use a Deep Learning AMI or compatible.
+  KeyPairName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: Name of an existing EC2 KeyPair to enable SSH access to the instance.
+  DBInstanceClass:
+    Type: String
+    Default: db.t3.micro
+    Description: RDS PostgreSQL instance class.
+  DBAllocatedStorage:
+    Type: String
+    Default: '20'
+    Description: Allocated storage for RDS instance (GB).
+  DBName:
+    Type: String
+    Default: ros2saasdb
+    Description: Database name.
+  DBUsername:
+    Type: String
+    Default: ros2saasuser
+    Description: Master username for the RDS database.
+  DBPassword:
+    Type: String
+    Description: Master password for the RDS database. (Min 8 characters)
+    NoEcho: true
+  EcrRepositoryName:
+    Type: String
+    Description: Name of the ECR repository where the application Docker image is stored.
+  DockerImageTag:
+    Type: String
+    Default: latest
+    Description: Tag of the Docker image in ECR to deploy.
+  ContainerCpu:
+    Type: Number
+    Default: 1024 # 1 vCPU for Fargate
+    Description: CPU units for the ECS Fargate task.
+  ContainerMemory:
+    Type: Number
+    Default: 2048 # 2GB RAM for Fargate
+    Description: Memory (MiB) for the ECS Fargate task.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Network Configuration
+        Parameters:
+          - VpcId
+          - SubnetIds
+      - Label:
+          default: EC2 Configuration (Optional, if deploying directly to EC2 or for Bastion)
+        Parameters:
+          - InstanceType
+          - EC2ImageId
+          - KeyPairName
+      - Label:
+          default: RDS PostgreSQL Configuration
+        Parameters:
+          - DBInstanceClass
+          - DBAllocatedStorage
+          - DBName
+          - DBUsername
+          - DBPassword
+      - Label:
+          default: ECS Fargate Service Configuration
+        Parameters:
+          - EcrRepositoryName
+          - DockerImageTag
+          - ContainerCpu
+          - ContainerMemory
+    ParameterLabels:
+      DBPassword:
+        default: Database Master Password
+
+Resources:
+  # --- Security Groups ---
+  EC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for EC2 instance
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22 # SSH
+          ToPort: 22
+          CidrIp: 0.0.0.0/0 # WARNING: Open to the world. Restrict to your IP.
+        - IpProtocol: tcp
+          FromPort: 80  # HTTP
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443 # HTTPS
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+        # Add other ports if needed by your application directly on EC2
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-EC2SecurityGroup"
+
+  RDSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for RDS PostgreSQL instance
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432 # PostgreSQL
+          ToPort: 5432
+          SourceSecurityGroupId: !GetAtt ECSServiceSecurityGroup.GroupId # Allow access from ECS tasks
+          # If EC2 instances also need to access RDS directly:
+          # SourceSecurityGroupId: !GetAtt EC2InstanceSecurityGroup.GroupId
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-RDSSecurityGroup"
+
+  ECSServiceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for ECS Fargate tasks
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp # For ALB or direct access to container port
+          FromPort: 80 # Assuming container listens on 80 or mapped by ALB
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        # Add other ports your container exposes, e.g., 3000 for Node.js backend if not using port 80 in container
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-ECSServiceSecurityGroup"
+
+  # --- IAM Roles ---
+  ECSTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Path: /
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-ECSTaskExecutionRole"
+
+  # --- RDS PostgreSQL Instance ---
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Subnet group for RDS instance
+      SubnetIds: !Ref SubnetIds
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-DBSubnetGroup"
+
+  RDSInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBName: !Ref DBName
+      DBInstanceIdentifier: !Sub "${AWS::StackName}-db"
+      AllocatedStorage: !Ref DBAllocatedStorage
+      DBInstanceClass: !Ref DBInstanceClass
+      Engine: postgres
+      EngineVersion: "15.3" # Specify your desired PostgreSQL version
+      MasterUsername: !Ref DBUsername
+      MasterUserPassword: !Ref DBPassword
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VPCSecurityGroups:
+        - !GetAtt RDSSecurityGroup.GroupId
+      PubliclyAccessible: false # Recommended: keep DB private
+      BackupRetentionPeriod: 7
+      PreferredBackupWindow: "03:00-04:00"
+      PreferredMaintenanceWindow: "Sun:04:30-Sun:05:30"
+      MultiAZ: false # Set to true for production for high availability
+      StorageType: gp2
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-RDSInstance"
+    DeletionPolicy: Snapshot # Or Delete, depending on your needs
+
+  # --- ECR Repository (Assumed to be created manually or by another process) ---
+  # If you want CloudFormation to create it:
+  # EcrRepository:
+  #   Type: AWS::ECR::Repository
+  #   Properties:
+  #     RepositoryName: !Ref EcrRepositoryName
+  #     ImageScanningConfiguration:
+  #       ScanOnPush: true
+
+  # --- ECS Cluster ---
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub "${AWS::StackName}-Cluster"
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-ECSCluster"
+
+  # --- ECS Task Definition for Fargate ---
+  ECSTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub "${AWS::StackName}-AppTask"
+      RequiresCompatibilities:
+        - FARGATE
+      NetworkMode: awsvpc
+      Cpu: !Ref ContainerCpu
+      Memory: !Ref ContainerMemory
+      ExecutionRoleArn: !Ref ECSTaskExecutionRole
+      # TaskRoleArn: !Ref MyTaskRole (if your container needs specific IAM permissions to AWS services)
+      ContainerDefinitions:
+        - Name: !Sub "${AWS::StackName}-AppContainer"
+          Image: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${EcrRepositoryName}:${DockerImageTag}"
+          Essential: true
+          PortMappings:
+            - ContainerPort: 80 # Port your application listens on inside the container (e.g., Nginx or Node.js)
+              Protocol: tcp
+            # Add other ports if needed, e.g., 3000 for Node.js backend if not using port 80 in container
+            # - ContainerPort: 3000
+            #   Protocol: tcp
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Sub "/ecs/${AWS::StackName}-AppTask"
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+          Environment:
+            - Name: DATABASE_URL # Example environment variable for DB connection
+              Value: !Join
+                - ''
+                - - 'postgresql://'
+                  - !Ref DBUsername
+                  - ':'
+                  - !Ref DBPassword
+                  - '@'
+                  - !GetAtt RDSInstance.Endpoint.Address
+                  - ':'
+                  - !GetAtt RDSInstance.Endpoint.Port
+                  - '/'
+                  - !Ref DBName
+            - Name: ROS_DISTRO
+              Value: jazzy # Or your specific ROS distro
+            # Add other environment variables your application needs
+            # - Name: NODE_ENV
+            #   Value: production
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-ECSTaskDefinition"
+
+  # --- ECS Service (Fargate) ---
+  # Optional: Application Load Balancer (ALB) - Recommended for web services
+  # This template assumes direct service discovery or using service's public IP if enabled.
+  # For a production setup, an ALB is highly recommended.
+  # TargetGroup, Listener, LoadBalancer resources would be defined here.
+
+  ECSService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Sub "${AWS::StackName}-AppService"
+      Cluster: !Ref ECSCluster
+      TaskDefinition: !Ref ECSTaskDefinition
+      DesiredCount: 1 # Number of tasks to run
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          Subnets: !Ref SubnetIds
+          SecurityGroups:
+            - !GetAtt ECSServiceSecurityGroup.GroupId
+          AssignPublicIp: ENABLED # ENABLED for Fargate tasks to pull images from ECR if ECR is not using VPC endpoints
+                                # And for direct access if no ALB. For ALB, can be DISABLED.
+      # LoadBalancers: # Uncomment and configure if using an ALB
+      #   - ContainerName: !Sub "${AWS::StackName}-AppContainer"
+      #     ContainerPort: 80 # Port the container exposes
+      #     TargetGroupArn: !Ref MyTargetGroup # Reference to your ALB Target Group
+      HealthCheckGracePeriodSeconds: 60 # Give time for container to start
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-ECSService"
+
+  # --- EC2 Instance (Optional - e.g., for running Gazebo server directly if not using ECS for it, or as a bastion) ---
+  # This EC2 instance is defined but not explicitly integrated with the ECS service in this basic template.
+  # You might use it for tasks that are not well-suited for Fargate, or as a dev/bastion host.
+  # If using g4dn instance type for Gazebo server, ensure the AMI and user data are appropriate.
+  EC2Instance:
+    Type: AWS::EC2::Instance
+    Condition: CreateEC2Instance # Example condition, set to true or based on a parameter
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref EC2ImageId
+      KeyName: !Ref KeyPairName
+      SecurityGroupIds:
+        - !Ref EC2SecurityGroup
+      SubnetId: !Select [0, !Ref SubnetIds] # Deploy in the first subnet
+      # UserData: # Script to run on instance launch (e.g., install Docker, NVIDIA drivers, clone repo)
+      #   Fn::Base64: |
+      #     #!/bin/bash
+      #     yum update -y
+      #     amazon-linux-extras install docker -y
+      #     systemctl start docker
+      #     systemctl enable docker
+      #     usermod -a -G docker ec2-user
+      #     # For NVIDIA GPU instances (g4dn): Install NVIDIA drivers
+      #     # Refer to AWS documentation for installing NVIDIA drivers on your chosen AMI
+      #     # Example for Amazon Linux 2 with NVIDIA drivers:
+      #     # yum groupinstall "Development Tools" -y
+      #     # yum install kernel-devel-$(uname -r) kernel-headers-$(uname -r) -y
+      #     # -- install nvidia drivers from S3 or NVIDIA website --
+      #     # -- install nvidia-container-toolkit --
+      #     # Clone application, build Docker, run container, etc.
+      #     # git clone <your-repo> /home/ec2-user/app
+      #     # cd /home/ec2-user/app && docker build -t my-ros-app .
+      #     # docker run -d --gpus all -p 80:80 my-ros-app
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-EC2Instance"
+
+Conditions:
+  CreateEC2Instance: !Equals [!Ref InstanceType, "g4dn.xlarge"] # Example: Only create EC2 if g4dn is chosen
+  # Or simply: CreateEC2Instance: !Equals [ "true", "true" ] # To always create if this block is uncommented
+
+Outputs:
+  RDSInstanceEndpoint:
+    Description: RDS PostgreSQL Instance Endpoint
+    Value: !GetAtt RDSInstance.Endpoint.Address
+  RDSInstancePort:
+    Description: RDS PostgreSQL Instance Port
+    Value: !GetAtt RDSInstance.Endpoint.Port
+  ECSServiceName:
+    Description: ECS Service Name
+    Value: !Ref ECSService
+  ECSClusterName:
+    Description: ECS Cluster Name
+    Value: !Ref ECSCluster
+  # EC2InstancePublicIp: # Only if EC2 instance is created and has a public IP
+  #   Description: Public IP address of the EC2 instance
+  #   Value: !GetAtt EC2Instance.PublicIp
+  #   Condition: CreateEC2Instance
+```
+
+This CloudFormation template (`cloudformation.yaml`) provides a comprehensive setup for:
+-   **Networking:** VPC, Subnets (passed as parameters), and Security Groups for EC2, RDS, and ECS.
+-   **Database:** An RDS PostgreSQL instance with a subnet group.
+-   **ECS (Elastic Container Service):**
+    -   An ECS Cluster.
+    -   An IAM Role for ECS task execution.
+    -   An ECS Task Definition configured for Fargate, which will pull the application image from ECR (specified by `EcrRepositoryName` and `DockerImageTag` parameters). It includes port mapping and basic logging configuration. Environment variables, including the `DATABASE_URL`, are passed to the container.
+    -   An ECS Service to run and maintain the desired number of tasks using the Fargate launch type. It's configured for public IP assignment for tasks, suitable for ECR image pulling and direct access if no ALB is used. (ALB setup is commented out but recommended for production).
+-   **EC2 Instance (Optional):**
+    -   An EC2 instance definition. This is conditionally created (example condition: if `InstanceType` is `g4dn.xlarge`).
+    -   Includes placeholder `UserData` for instance initialization (e.g., installing Docker, NVIDIA drivers for GPU instances). This part is highly dependent on the chosen AMI and specific needs.
+    -   This EC2 instance is not directly integrated with the ECS service in this template but could serve as a dedicated Gazebo server, a bastion host, or for other components not suitable for Fargate.
+
+**Key Points & How to Use:**
+-   **Parameters:** The template uses parameters for customization (VPC, subnets, instance types, DB credentials, ECR repo name, etc.). These need to be provided when creating the stack.
+-   **ECR Repository:** It assumes the ECR repository (where your Docker image is pushed) already exists or is managed separately. The GitHub Actions workflow (`aws_ecr_push.yml`) will be responsible for building the Docker image and pushing it to this ECR repository.
+-   **AMI ID:** The `EC2ImageId` parameter needs to be updated with a valid AMI ID for your chosen AWS region and OS (e.g., an Ubuntu 20.04/22.04 based Deep Learning AMI if using g4dn instances for GPU-accelerated Gazebo).
+-   **Security:**
+    -   The EC2 security group allows SSH from `0.0.0.0/0` for simplicity; **this should be restricted to your IP address in a production environment.**
+    -   RDS is kept private, accessible only from the ECS service security group.
+-   **ECS Fargate:** This template primarily focuses on deploying the application container (which includes ROS, Node.js backend, and potentially serves the frontend) using AWS Fargate for serverless container orchestration.
+-   **EC2 for Gazebo Server:** If you intend to run a heavy Gazebo server, deploying it on a dedicated EC2 instance (like a `g4dn` for GPU) might be more appropriate than trying to fit it into a Fargate task, especially if it requires significant resources or direct hardware access not easily managed by Fargate. The EC2 resource in this template is a starting point for that. The application running on ECS could then communicate with the Gazebo server on EC2 (requiring network configuration between them).
+
+This template provides a strong foundation. You'll need to adjust parameters, AMI IDs, and potentially the UserData script for EC2 based on your specific application requirements and AWS region.

@@ -1,0 +1,66 @@
+# Heroku Procfile
+# This Procfile assumes you are using Heroku's Docker deployment method.
+# It defines the process types for your application.
+
+# 'web' process type is required for web applications on Heroku.
+# It will run the command specified in the Dockerfile's CMD or ENTRYPOINT.
+# If your Dockerfile (Heroku-specific one) for the Node.js backend
+# starts the Node.js server (e.g., using `npm start` or `node server.js`),
+# then Heroku will use that.
+web: # No command needed here if Docker CMD is set
+
+# Optional: Define a 'release' phase command if needed.
+# This command runs before a new version of your app is deployed.
+# Useful for database migrations or other setup tasks.
+# release: python manage.py migrate # Example for a Django app
+
+# Optional: Define worker dynos if you have background tasks.
+# worker: python my_ros_worker.py
+
+# For a ROS2 application, direct ROS node execution via Procfile is tricky on Heroku
+# because Heroku's dynos are not designed for complex, stateful applications like ROS nodes
+# or Gazebo simulations directly.
+# The typical approach for ROS on Heroku would be:
+# 1. A web backend (e.g., Node.js/Python Flask) defined in the 'web' process.
+# 2. This backend communicates with a separate, self-managed ROS environment
+#    (e.g., on AWS, DigitalOcean, or a local machine with ngrok).
+# 3. OR, the Docker container for the 'web' process itself includes a minimal ROS setup
+#    and the Python script (`ros_operations_api.py`) interacts with it or uses
+#    ROS client libraries to communicate with a remote ROS master/graph.
+
+# If the Python script `ros_operations_api.py` is a Flask/FastAPI app
+# that itself starts and manages ROS processes or acts as a bridge,
+# and your Dockerfile's CMD is set to run this Python app (e.g., using gunicorn),
+# then 'web:' is sufficient.
+
+# Example if your ros_operations_api.py is a Gunicorn-served Flask app:
+# web: gunicorn ros_operations_api:app
+
+# For this project, the Dockerfile for Heroku will set up Node.js and potentially
+# a way to invoke the Python ROS API script. The CMD of that Dockerfile will be key.
+# If the Dockerfile's CMD is `npm start` which runs the Node.js backend,
+# and the Node.js backend can then spawn/manage the Python ROS script,
+# then `web:` is correct as is.
+# The Python script (`ros_operations_api.py`) would likely be a lightweight server
+# (Flask, FastAPI) that the Node.js backend can call, or the Node.js backend
+# directly executes Python scripts that perform ROS operations.
+
+# For now, assuming the Dockerfile's CMD handles starting the primary web service.
+# The Python script `ros_operations_api.py` will be part of the application run by 'web'.
+# No specific command here means Heroku uses the Dockerfile's CMD.
+# This is standard for heroku.yml or Docker deploys.
+# If not using Docker deploys, you'd specify the command here like:
+# web: node server.js
+# or
+# web: python app.py
+# For this project, we are using Docker, so the Dockerfile's CMD is primary.
+# The Dockerfile for Heroku will be designed to run the Node.js backend,
+# which in turn can interact with the Python ROS API script.
+
+# If you need to run ROS nodes directly (not recommended for typical Heroku dynos):
+# ros_worker: bash ./run_ros_nodes.sh # (You'd need run_ros_nodes.sh)
+
+# Given the plan to use a Node.js backend with a pre-built ROS2 image,
+# the Node.js app will be the primary 'web' process.
+# The Python script will be a helper/API layer invoked by Node.js.
+# So, `web:` (relying on Docker CMD) is appropriate.

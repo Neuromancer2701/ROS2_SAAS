@@ -1,0 +1,3 @@
+# This is an empty marker file.
+# It indicates to ament_python that 'ros2_debug_dashboard' is a Python package.
+# Referenced in setup.py to help ROS 2 tools discover the package.
